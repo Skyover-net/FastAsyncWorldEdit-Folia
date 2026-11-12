@@ -21,6 +21,7 @@ package com.sk89q.worldedit.bukkit;
 
 import com.fastasyncworldedit.bukkit.BukkitPermissionAttachmentManager;
 import com.fastasyncworldedit.bukkit.FaweBukkit;
+import com.fastasyncworldedit.bukkit.util.PaperSupport;
 import com.fastasyncworldedit.core.util.FoliaUtil;
 import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.util.UpdateNotification;
@@ -37,7 +38,6 @@ import com.sk89q.worldedit.WorldEditManifest;
 import com.sk89q.worldedit.bukkit.adapter.AdapterLoadException;
 import com.sk89q.worldedit.bukkit.adapter.BukkitImplAdapter;
 import com.sk89q.worldedit.bukkit.adapter.BukkitImplLoader;
-import com.sk89q.worldedit.bukkit.adapter.Refraction;
 import com.sk89q.worldedit.event.platform.CommandEvent;
 import com.sk89q.worldedit.event.platform.CommandSuggestionEvent;
 import com.sk89q.worldedit.event.platform.PlatformReadyEvent;
@@ -50,6 +50,7 @@ import com.sk89q.worldedit.extent.inventory.BlockBag;
 import com.sk89q.worldedit.internal.anvil.ChunkDeleter;
 import com.sk89q.worldedit.internal.command.CommandUtil;
 import com.sk89q.worldedit.internal.util.LogManagerCompat;
+import com.sk89q.worldedit.registry.Registries;
 import com.sk89q.worldedit.util.lifecycle.Lifecycled;
 import com.sk89q.worldedit.util.lifecycle.SimpleLifecycled;
 import com.sk89q.worldedit.world.World;
@@ -59,7 +60,6 @@ import com.sk89q.worldedit.world.entity.EntityType;
 import com.sk89q.worldedit.world.gamemode.GameModes;
 import com.sk89q.worldedit.world.item.ItemCategory;
 import com.sk89q.worldedit.world.weather.WeatherTypes;
-import io.papermc.lib.PaperLib;
 import org.apache.logging.log4j.Logger;
 import org.bstats.bukkit.Metrics;
 import org.bstats.charts.SimplePie;
@@ -141,41 +141,28 @@ public class WorldEditPlugin extends JavaPlugin {
         Objects.requireNonNull(attributes, "Could not retrieve manifest attributes");
         final String type = attributes.getValue("FAWE-Plugin-Jar-Type");
         Objects.requireNonNull(type, "Could not determine plugin jar type");
-        if (PaperLib.isPaper()) {
-            if (PaperLib.getMinecraftVersion() < 20 || (PaperLib.getMinecraftVersion() == 20 && PaperLib.getMinecraftPatchVersion() < 5)) {
-                if (type.equals("mojang") && !Refraction.isMojangMapped()) {
-                    throw new IllegalStateException(
+        if (PaperSupport.isPaper()) {
+            if (type.equals("spigot")) {
+                LOGGER.warn(
                         """
-                        
-                        **********************************************
-                        ** You are using the wrong FAWE jar for your Minecraft version.
-                        ** Download the correct FAWE jar from Modrinth: https://modrinth.com/plugin/fastasyncworldedit/
-                        **********************************************"""
-                    );
-                }
-            } else if (PaperLib.getMinecraftVersion() > 20 || (PaperLib.getMinecraftVersion() == 20 && PaperLib.getMinecraftPatchVersion() >= 5)) {
-                if (type.equals("spigot")) {
-                    LOGGER.warn(
-                        """
-                        
-                        **********************************************
-                        ** You are using the Spigot-mapped FAWE jar on a modern Paper version.
-                        ** This will result in slower first-run times and wasted disk space from plugin remapping.
-                        ** Download the Paper FAWE jar from Modrinth to avoid this: https://modrinth.com/plugin/fastasyncworldedit/
-                        **********************************************"""
-                    );
-                }
+                                
+                                **********************************************
+                                ** You are using the Spigot-mapped FAWE jar on a modern Paper version.
+                                ** This will result in slower first-run times and wasted disk space from plugin remapping.
+                                ** Download the Paper FAWE jar from Modrinth to avoid this: https://modrinth.com/plugin/fastasyncworldedit/
+                                **********************************************"""
+                );
             }
         } else {
             if (type.equals("mojang")) {
                 throw new IllegalStateException(
-                    """
-                    
-                    **********************************************
-                    ** You are attempting to run the Paper FAWE jar on a Spigot server.
-                    ** Either switch to Paper (https://papermc.io), or download the correct FAWE jar for your platform
-                    ** from Modrinth: https://modrinth.com/plugin/fastasyncworldedit/
-                    **********************************************"""
+                        """
+                                
+                                **********************************************
+                                ** You are attempting to run the Paper FAWE jar on a Spigot server.
+                                ** Either switch to Paper (https://papermc.io), or download the correct FAWE jar for your platform
+                                ** from Modrinth: https://modrinth.com/plugin/fastasyncworldedit/
+                                **********************************************"""
                 );
             }
         }
@@ -191,7 +178,7 @@ public class WorldEditPlugin extends JavaPlugin {
         //FAWE end
 
         //FAWE start - Modify WorldEdit config name
-        config = new BukkitConfiguration(new YAMLProcessor(new File(getDataFolder(), "worldedit-config.yml"), true), this);
+        config = new BukkitConfiguration(new YAMLProcessor(new File(getDataFolder(), "worldedit-config.yml").toPath(), true), this);
         // Load config before we say we've loaded platforms as it is used in listeners of the event
         // Load config in onLoad to ensure it is loaded before FAWE settings to allow (inelegant) copying of values across
         // where needed
@@ -256,11 +243,10 @@ public class WorldEditPlugin extends JavaPlugin {
         // Now we can register events
         getServer().getPluginManager().registerEvents(new WorldEditListener(this), this);
         // register async tab complete, if available
-        if (PaperLib.isPaper()) {
+        if (PaperSupport.isPaper()) {
             getServer().getPluginManager().registerEvents(new AsyncTabCompleteListener(), this);
         }
 
-        initializeRegistries(); // this creates the objects matching Bukkit's enums - but doesn't fill them with data yet
         if (Bukkit.getWorlds().isEmpty()) {
             setupPreWorldData();
             // register this so we can load world-dependent data right as the first world is loading
@@ -292,6 +278,7 @@ public class WorldEditPlugin extends JavaPlugin {
 
     private void setupPreWorldData() {
         loadAdapter();
+        initializeRegistries(); // this creates the objects matching Bukkit's enums - but doesn't fill them with data yet
         WorldEdit.getInstance().loadMappings();
     }
 
@@ -353,9 +340,17 @@ public class WorldEditPlugin extends JavaPlugin {
                 EntityType.REGISTRY.register("minecraft:" + lowerCaseMcId, new EntityType("minecraft:" + lowerCaseMcId));
             }
         }
+
+        // Registries only available via NMS
+        BukkitImplAdapter adapter = getBukkitImplAdapter();
+        if (adapter != null) {
+            adapter.initializeRegistries();
+        }
+
         // ... :|
         GameModes.get("");
         WeatherTypes.get("");
+        Registries.get("");
     }
 
     private void setupTags() {
@@ -458,7 +453,11 @@ public class WorldEditPlugin extends JavaPlugin {
         if (config != null) {
             config.unload();
         }
-        if (!FoliaUtil.isFoliaServer()) {
+        if (FoliaUtil.isFoliaServer()) {
+            this.getServer().getGlobalRegionScheduler().cancelTasks(this);
+            this.getServer().getAsyncScheduler().cancelTasks(this);
+            // Region schedulers do not support cancelling tasks
+        } else {
             this.getServer().getScheduler().cancelTasks(this);
         }
     }

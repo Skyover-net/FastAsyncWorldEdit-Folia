@@ -19,6 +19,8 @@
 
 package com.sk89q.worldedit.bukkit;
 
+import com.fastasyncworldedit.bukkit.util.FoliaScheduling;
+import com.fastasyncworldedit.bukkit.util.PaperSupport;
 import com.fastasyncworldedit.bukkit.util.WorldUnloadedException;
 import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.FaweCache;
@@ -32,6 +34,7 @@ import com.fastasyncworldedit.core.util.TaskManager;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import com.sk89q.worldedit.EditSession;
+import com.sk89q.worldedit.MaxChangedBlocksException;
 import com.sk89q.worldedit.WorldEditException;
 import com.sk89q.worldedit.blocks.BaseItem;
 import com.sk89q.worldedit.blocks.BaseItemStack;
@@ -59,22 +62,21 @@ import com.sk89q.worldedit.world.generation.ConfiguredFeatureType;
 import com.sk89q.worldedit.world.generation.StructureType;
 import com.sk89q.worldedit.world.weather.WeatherType;
 import com.sk89q.worldedit.world.weather.WeatherTypes;
-import io.papermc.lib.PaperLib;
 import org.apache.logging.log4j.Logger;
 import org.bukkit.Bukkit;
 import org.bukkit.Effect;
+import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.TreeType;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
-import org.bukkit.Location;
 import org.bukkit.block.Chest;
 import org.bukkit.entity.Entity;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 
 import java.lang.ref.WeakReference;
-import java.util.concurrent.CompletableFuture;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -149,17 +151,21 @@ public class BukkitWorld extends AbstractWorld {
 
     private <T> T syncRegion(BlockVector3 position, java.util.function.Supplier<T> supplier) {
         if (FoliaUtil.isFoliaServer()) {
-            World world = getWorld();
-            Location location = new Location(world, position.x(), position.y(), position.z());
-            CompletableFuture<T> future = new CompletableFuture<>();
-            Bukkit.getServer().getRegionScheduler().run(
-                    WorldEditPlugin.getInstance(),
-                    location,
-                    scheduledTask -> future.complete(supplier.get())
-            );
-            return future.join();
+            // Runs inline when this thread owns the region, never blocks forever (see FoliaScheduling)
+            return FoliaScheduling.callAt(getWorld(), position.x(), position.z(), supplier);
         }
         return TaskManager.taskManager().sync(supplier);
+    }
+
+    /**
+     * On Folia, run world access on the thread owning {@code position}. TaskManager#sync runs inline on Folia, so callers
+     * coming from edit or async threads would otherwise touch blocks of a region they don't own.
+     */
+    private <T> T onOwningRegion(BlockVector3 position, java.util.function.Supplier<T> supplier) {
+        if (FoliaUtil.isFoliaServer()) {
+            return FoliaScheduling.callAt(getWorld(), position.x(), position.z(), supplier);
+        }
+        return supplier.get();
     }
 
     @Override
@@ -258,15 +264,11 @@ public class BukkitWorld extends AbstractWorld {
     @Override
     public Path getStoragePath() {
         Path worldFolder = getWorld().getWorldFolder().toPath();
-        switch (getWorld().getEnvironment()) {
-            case NETHER:
-                return worldFolder.resolve("DIM-1");
-            case THE_END:
-                return worldFolder.resolve("DIM1");
-            case NORMAL:
-            default:
-                return worldFolder;
-        }
+        return switch (getWorld().getEnvironment()) {
+            case NETHER -> worldFolder.resolve("DIM-1");
+            case THE_END -> worldFolder.resolve("DIM1");
+            default -> worldFolder;
+        };
     }
 
     @Override
@@ -300,6 +302,10 @@ public class BukkitWorld extends AbstractWorld {
         //FAWE start - safe edit region
         testCoords(pt);
         //FAWE end
+        return onOwningRegion(pt, () -> clearContainerBlockContents0(pt));
+    }
+
+    private boolean clearContainerBlockContents0(BlockVector3 pt) {
         BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
         if (adapter != null) {
             try {
@@ -312,13 +318,17 @@ public class BukkitWorld extends AbstractWorld {
         }
 
         Block block = getWorld().getBlockAt(pt.x(), pt.y(), pt.z());
-        BlockState state = PaperLib.getBlockState(block, false).getState();
-        if (!(state instanceof InventoryHolder)) {
+        BlockState state;
+        if (PaperSupport.isPaper()) {
+            state = block.getState(false);
+        } else {
+            state = block.getState();
+        }
+        if (!(state instanceof InventoryHolder chest)) {
             return false;
         }
 
         TaskManager.taskManager().sync(() -> {
-            InventoryHolder chest = (InventoryHolder) state;
             Inventory inven = chest.getInventory();
             if (chest instanceof Chest) {
                 inven = ((Chest) chest).getBlockInventory();
@@ -332,10 +342,16 @@ public class BukkitWorld extends AbstractWorld {
     /**
      * An EnumMap that stores which WorldEdit TreeTypes apply to which Bukkit TreeTypes.
      */
+    @Deprecated
     private static final EnumMap<TreeGenerator.TreeType, TreeType> treeTypeMapping =
             new EnumMap<>(TreeGenerator.TreeType.class);
 
     static {
+        generateTreeMap();
+    }
+
+    @SuppressWarnings("deprecation")
+    private static void generateTreeMap() {
         for (TreeGenerator.TreeType type : TreeGenerator.TreeType.values()) {
             try {
                 TreeType bukkitType = TreeType.valueOf(type.name());
@@ -355,20 +371,25 @@ public class BukkitWorld extends AbstractWorld {
         for (TreeGenerator.TreeType type : TreeGenerator.TreeType.values()) {
             if (treeTypeMapping.get(type) == null) {
                 //FAWE start
-                LOGGER.info("No TreeType mapping for TreeGenerator.TreeType." + type);
-                LOGGER.info("The above message is displayed because your FAWE version is newer than {}" +
-                        " and contains features of future minecraft versions which do not exist in {} hence the tree type" +
-                        " {} is not available. This is not an error. This version of FAWE will work on your version of " +
-                        " Minecraft. This is an informative message only.", Bukkit.getVersion(), Bukkit.getVersion(), type);
+                LOGGER.info("""
+                        No TreeType mapping for TreeGenerator.TreeType.{}
+                        The above message is displayed because your FAWE version is newer than {}
+                        and contains features of future Minecraft versions which do not exist in {} hence the tree type
+                        {} is not available. This is not an error. This version of FAWE will work on your version of
+                        Minecraft. This is an informative message only.""",
+                        type, Bukkit.getVersion(), Bukkit.getVersion(), type);
                 //FAWE end
             }
         }
     }
 
+    @Deprecated
     public static TreeType toBukkitTreeType(TreeGenerator.TreeType type) {
         return treeTypeMapping.get(type);
     }
 
+    @SuppressWarnings("deprecation")
+    @Deprecated
     @Override
     public boolean generateTree(TreeGenerator.TreeType type, EditSession editSession, BlockVector3 pt) {
         //FAWE start - allow tree commands to be undone and obey region restrictions
@@ -378,9 +399,23 @@ public class BukkitWorld extends AbstractWorld {
     }
 
     @Override
+    public boolean generateTree(
+            final com.sk89q.worldedit.world.generation.TreeType type,
+            final EditSession editSession,
+            final BlockVector3 position
+    ) throws MaxChangedBlocksException {
+        BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
+        if (adapter != null) {
+            return adapter.generateTree(type, getWorld(), editSession, position);
+        }
+        // No adapter, we can't generate this.
+        return false;
+    }
+
+    @Override
     public void dropItem(Vector3 pt, BaseItemStack item) {
         World world = getWorld();
-        world.dropItemNaturally(BukkitAdapter.adapt(world, pt), BukkitAdapter.adapt(item));
+        onOwningRegion(pt.toBlockPoint(), () -> world.dropItemNaturally(BukkitAdapter.adapt(world, pt), BukkitAdapter.adapt(item)));
     }
 
     @Override
@@ -394,8 +429,8 @@ public class BukkitWorld extends AbstractWorld {
         int Z = pt.z() >> 4;
         if (Fawe.isMainThread()) {
             world.getChunkAt(X, Z);
-        } else if (PaperLib.isPaper()) {
-            PaperLib.getChunkAtAsync(world, X, Z, true);
+        } else if (PaperSupport.isPaper()) {
+            world.getChunkAtAsync(X, Z, true);
         }
         //FAWE end
     }
@@ -444,6 +479,7 @@ public class BukkitWorld extends AbstractWorld {
         }
     }
 
+    @Deprecated
     @Override
     public boolean playEffect(Vector3 position, int type, int data) {
         World world = getWorld();
@@ -462,7 +498,18 @@ public class BukkitWorld extends AbstractWorld {
     @Override
     public boolean playBlockBreakEffect(Vector3 position, BlockType type) {
         World world = getWorld();
-        world.playEffect(BukkitAdapter.adapt(world, position), Effect.STEP_SOUND, BukkitAdapter.adapt(type));
+        Location location = BukkitAdapter.adapt(world, position);
+        Material material = BukkitAdapter.adapt(type);
+        if (FoliaUtil.isFoliaServer() && !Bukkit.isOwnedByCurrentRegion(location)) {
+            // Effects are played from the global region scheduler on Folia; hand off to the owning region.
+            Bukkit.getRegionScheduler().execute(
+                    WorldEditPlugin.getInstance(),
+                    location,
+                    () -> world.playEffect(location, Effect.STEP_SOUND, material)
+            );
+            return true;
+        }
+        world.playEffect(location, Effect.STEP_SOUND, material);
         return true;
     }
     //FAWE end
@@ -522,14 +569,14 @@ public class BukkitWorld extends AbstractWorld {
         //FAWE start - safe edit region
         testCoords(pt);
         //FAWE end
-        getWorld().getBlockAt(pt.x(), pt.y(), pt.z()).breakNaturally();
+        onOwningRegion(pt, () -> getWorld().getBlockAt(pt.x(), pt.y(), pt.z()).breakNaturally());
     }
 
     //FAWE start
     @Override
     public Collection<BaseItemStack> getBlockDrops(BlockVector3 position) {
-        return getWorld().getBlockAt(position.x(), position.y(), position.z()).getDrops().stream()
-                .map(BukkitAdapter::adapt).collect(Collectors.toList());
+        return onOwningRegion(position, () -> getWorld().getBlockAt(position.x(), position.y(), position.z()).getDrops().stream()
+                .map(BukkitAdapter::adapt).collect(Collectors.toList()));
     }
     //FAWE end
 
@@ -602,8 +649,10 @@ public class BukkitWorld extends AbstractWorld {
                 return worldNativeAccess.setBlock(position, block, sideEffects);
             } catch (Exception e) {
                 if (block instanceof BaseBlock && ((BaseBlock) block).getNbt() != null) {
-                    LOGGER.warn("Tried to set a corrupt tile entity at " + position.toString()
-                            + ": " + ((BaseBlock) block).getNbt(), e);
+                    LOGGER.warn(
+                            "Tried to set a corrupt tile entity at " + position.toString()
+                                    + ": " + ((BaseBlock) block).getNbt(), e
+                    );
                 } else {
                     LOGGER.warn("Failed to set block via adapter, falling back to generic", e);
                 }
@@ -668,12 +717,6 @@ public class BukkitWorld extends AbstractWorld {
         }
 
         return false;
-    }
-
-    @Override
-    public boolean fullySupports3DBiomes() {
-        // Supports if API does and we're not in the overworld
-        return HAS_3D_BIOMES && getWorld().getEnvironment() != World.Environment.NORMAL || PaperLib.isVersion(18);
     }
 
     @SuppressWarnings("deprecation")

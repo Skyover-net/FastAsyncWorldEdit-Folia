@@ -59,6 +59,8 @@ public final class BiomeTypes {
     @Nullable
     public static final BiomeType CRIMSON_FOREST = get("minecraft:crimson_forest");
     @Nullable
+    public static final BiomeType DAPPLED_FOREST = get("minecraft:dappled_forest");
+    @Nullable
     public static final BiomeType DARK_FOREST = get("minecraft:dark_forest");
     @Nullable
     @Deprecated
@@ -230,6 +232,8 @@ public final class BiomeTypes {
     public static final BiomeType STONY_PEAKS = get("minecraft:stony_peaks");
     @Nullable
     public static final BiomeType STONY_SHORE = get("minecraft:stony_shore");
+    @Nullable
+    public static final BiomeType SULFUR_CAVES = get("minecraft:sulfur_caves");
     @Nullable
     public static final BiomeType SUNFLOWER_PLAINS = get("minecraft:sunflower_plains");
     @Nullable

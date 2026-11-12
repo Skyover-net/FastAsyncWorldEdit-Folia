@@ -20,6 +20,7 @@
 package com.sk89q.worldedit.bukkit;
 
 import com.fastasyncworldedit.bukkit.util.MinecraftVersion;
+import com.fastasyncworldedit.bukkit.util.PaperSupport;
 import com.fastasyncworldedit.core.configuration.Settings;
 import com.fastasyncworldedit.core.util.FoliaUtil;
 import com.fastasyncworldedit.core.extent.processor.PlacementStateProcessor;
@@ -47,7 +48,6 @@ import com.sk89q.worldedit.util.SideEffect;
 import com.sk89q.worldedit.util.lifecycle.Lifecycled;
 import com.sk89q.worldedit.world.DataFixer;
 import com.sk89q.worldedit.world.registry.Registries;
-import io.papermc.lib.PaperLib;
 import org.apache.logging.log4j.Logger;
 import org.bukkit.Bukkit;
 import org.bukkit.Server;
@@ -137,6 +137,15 @@ public class BukkitServerInterface extends AbstractPlatform implements MultiUser
     @Override
     public int schedule(long delay, long period, Runnable task) {
         if (FoliaUtil.isFoliaServer()) {
+            // Folia has no task ids; return a non-failure id so callers (e.g. the block break effect queue)
+            // do not keep rescheduling or treat the task as failed.
+            // The global region scheduler requires an initial delay of at least 1 tick.
+            plugin.getServer().getGlobalRegionScheduler().runAtFixedRate(
+                    plugin,
+                    scheduledTask -> task.run(),
+                    Math.max(1, delay),
+                    period
+            );
             return 0;
         }
         return Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, task, delay, period);
@@ -269,7 +278,7 @@ public class BukkitServerInterface extends AbstractPlatform implements MultiUser
 
     @Override
     public long getTickCount() {
-        if (PaperLib.isPaper()) {
+        if (PaperSupport.isPaper()) {
             return Bukkit.getCurrentTick();
         }
         return super.getTickCount();

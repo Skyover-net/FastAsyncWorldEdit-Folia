@@ -1,5 +1,6 @@
 package com.fastasyncworldedit.bukkit.adapter;
 
+import com.fastasyncworldedit.bukkit.util.FoliaScheduling;
 import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.configuration.Settings;
 import com.fastasyncworldedit.core.internal.exception.FaweException;
@@ -10,6 +11,7 @@ import com.fastasyncworldedit.core.queue.IChunkSet;
 import com.fastasyncworldedit.core.queue.IQueueExtent;
 import com.fastasyncworldedit.core.queue.implementation.QueueHandler;
 import com.fastasyncworldedit.core.queue.implementation.blocks.CharGetBlocks;
+import com.fastasyncworldedit.core.util.FoliaUtil;
 import com.fastasyncworldedit.core.util.MemUtil;
 import com.fastasyncworldedit.core.util.task.FaweThreadUtil;
 import com.sk89q.worldedit.extent.Extent;
@@ -54,6 +56,14 @@ public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends C
     }
 
     protected abstract void send();
+
+    /**
+     * The Bukkit world of this chunk, used on Folia to run the chunk's sync tasks on the region owning it.
+     * Adapters override this; {@code null} falls back to the queue handler's sync queue.
+     */
+    protected org.bukkit.World getBukkitWorld() {
+        return null;
+    }
 
     protected abstract CompletableFuture<LevelChunk> ensureLoaded(ServerLevel serverLevel);
 
@@ -170,6 +180,28 @@ public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends C
                     throw e;
                 }
             };
+            if (FoliaUtil.isFoliaServer()) {
+                org.bukkit.World world = getBukkitWorld();
+                if (world != null) {
+                    // Entity removal/creation and tile entity loading must happen on the thread owning this chunk, not
+                    // on the global region thread the queue handler's sync queue runs on.
+                    CompletableFuture<Future<?>> result = new CompletableFuture<>();
+                    Runnable task = () -> {
+                        try {
+                            result.complete(chain.call());
+                        } catch (Throwable t) {
+                            result.completeExceptionally(t);
+                        }
+                    };
+                    try {
+                        FoliaScheduling.runAtChunk(world, chunkX, chunkZ, task);
+                    } catch (Throwable t) {
+                        result.completeExceptionally(t);
+                    }
+                    //noinspection unchecked - required at compile time
+                    return (T) (Future) result;
+                }
+            }
             //noinspection unchecked - required at compile time
             return (T) (Future) queueHandler.sync(chain);
         } else {

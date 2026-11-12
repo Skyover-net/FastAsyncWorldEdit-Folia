@@ -4,6 +4,7 @@ import com.fastasyncworldedit.bukkit.FaweBukkit;
 import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.configuration.Settings;
 import com.fastasyncworldedit.core.util.FaweTimer;
+import com.fastasyncworldedit.core.util.FoliaUtil;
 import com.fastasyncworldedit.core.util.MathMan;
 import com.fastasyncworldedit.core.util.TaskManager;
 import com.sk89q.worldedit.internal.util.LogManagerCompat;
@@ -59,6 +60,13 @@ public abstract class ChunkListener implements Listener {
             Settings.settings().TICK_LIMITER.FALLING, Settings.settings().TICK_LIMITER.ITEMS};
 
     public ChunkListener() {
+        if (Settings.settings().TICK_LIMITER.ENABLED && FoliaUtil.isFoliaServer()) {
+            // The tick limiter keeps unsynchronized global state (maps, last-chunk cache) written by every event handler.
+            // On Folia those handlers run on many region threads at once, which corrupts the maps (lost entries or an
+            // endless loop inside the hash map), so don't register it there.
+            LOGGER.warn("[FAWE Tick Limiter] tick-limiter.enabled is not supported on Folia and has been ignored.");
+            return;
+        }
         if (Settings.settings().TICK_LIMITER.ENABLED) {
             PluginManager plm = Bukkit.getPluginManager();
             Plugin plugin = Fawe.<FaweBukkit>platform().getPlugin();

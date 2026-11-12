@@ -1,16 +1,15 @@
 package com.fastasyncworldedit.bukkit.adapter;
 
+import com.fastasyncworldedit.bukkit.util.FoliaScheduling;
 import com.fastasyncworldedit.core.util.FoliaUtil;
 import com.fastasyncworldedit.core.util.TaskManager;
 import com.sk89q.worldedit.EditSession;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
 import com.sk89q.worldedit.bukkit.BukkitWorld;
-import com.sk89q.worldedit.bukkit.WorldEditPlugin;
 import com.sk89q.worldedit.bukkit.adapter.BukkitImplAdapter;
 import com.sk89q.worldedit.math.BlockVector3;
 import com.sk89q.worldedit.registry.state.Property;
 import com.sk89q.worldedit.util.TreeGenerator;
-import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.TreeType;
 import org.bukkit.World;
@@ -22,7 +21,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * A base class for version-specific implementations of the BukkitImplAdapter
@@ -40,6 +38,11 @@ public abstract class FaweAdapter<TAG, SERVER_LEVEL> extends CachedBukkitAdapter
 
     protected FaweAdapter(final BukkitImplAdapter<TAG> parent) {
         this.parent = parent;
+    }
+
+    @Override
+    public void initializeRegistries() {
+        parent.initializeRegistries();
     }
 
     @Override
@@ -93,32 +96,13 @@ public abstract class FaweAdapter<TAG, SERVER_LEVEL> extends CachedBukkitAdapter
             BlockVector3 target,
             World world
     ) {
-        if (Bukkit.isOwnedByCurrentRegion(world, target.x() >> 4, target.z() >> 4)) {
-            return generateTreeFoliaInternal(treeType, editSession, target, world);
-        }
-
-        CompletableFuture<Boolean> future = new CompletableFuture<>();
-
-        Bukkit.getServer().getRegionScheduler().run(
-                WorldEditPlugin.getInstance(),
+        // Runs inline when this thread owns the region; otherwise waits with a timeout instead of forever
+        return FoliaScheduling.callAt(
                 world,
-                target.x() >> 4,
-                target.z() >> 4,
-                task -> {
-                    try {
-                        boolean result = generateTreeFoliaInternal(treeType, editSession, target, world);
-                        future.complete(result);
-                    } catch (Exception e) {
-                        future.completeExceptionally(e);
-                    }
-                }
+                target.x(),
+                target.z(),
+                () -> generateTreeFoliaInternal(treeType, editSession, target, world)
         );
-
-        try {
-            return future.get();
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to generate tree on Folia", e);
-        }
     }
 
     private boolean generateTreeFoliaInternal(
