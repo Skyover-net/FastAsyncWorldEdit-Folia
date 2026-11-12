@@ -363,49 +363,56 @@ public final class PaperweightPlatformAdapter extends NMSAdapter {
             return;
         }
         if (FoliaUtil.isFoliaServer()) {
-            Bukkit.getServer().getRegionScheduler().execute(
-                    WorldEditPlugin.getInstance(),
-                    nmsWorld.getWorld(),
-                    chunkX,
-                    chunkZ,
-                    () -> {
-                        try {
-                            LevelChunk regionChunk = nmsWorld.getChunkSource().getChunkAtIfLoadedImmediately(chunkX, chunkZ);
-                            if (regionChunk == null) {
-                                return;
-                            }
-                            ChunkPos coordIntPair = regionChunk.getPos();
-                            ClientboundLevelChunkWithLightPacket packet;
-                            if (PaperSupport.isPaper()) {
-                                packet = new ClientboundLevelChunkWithLightPacket(
-                                        regionChunk,
-                                        nmsWorld.getChunkSource().getLightEngine(),
-                                        null,
-                                        null,
-                                        false // last false is to not bother with x-ray
+            try {
+                Bukkit.getServer().getRegionScheduler().execute(
+                        WorldEditPlugin.getInstance(),
+                        nmsWorld.getWorld(),
+                        chunkX,
+                        chunkZ,
+                        () -> {
+                            try {
+                                LevelChunk regionChunk = nmsWorld.getChunkSource().getChunkAtIfLoadedImmediately(chunkX, chunkZ);
+                                if (regionChunk == null) {
+                                    return;
+                                }
+                                ChunkPos coordIntPair = regionChunk.getPos();
+                                ClientboundLevelChunkWithLightPacket packet;
+                                if (PaperSupport.isPaper()) {
+                                    packet = new ClientboundLevelChunkWithLightPacket(
+                                            regionChunk,
+                                            nmsWorld.getChunkSource().getLightEngine(),
+                                            null,
+                                            null,
+                                            false // last false is to not bother with x-ray
+                                    );
+                                } else {
+                                    // deprecated on paper - deprecation suppressed
+                                    packet = new ClientboundLevelChunkWithLightPacket(
+                                            regionChunk,
+                                            nmsWorld.getChunkSource().getLightEngine(),
+                                            null,
+                                            null
+                                    );
+                                }
+                                nearbyPlayers(nmsWorld, coordIntPair).forEach(p -> p.connection.send(packet));
+                            } catch (IllegalStateException e) {
+                                LOGGER.warn(
+                                        "Skipped sending chunk packet for chunk [{}, {}] due to concurrent section modification",
+                                        chunkX,
+                                        chunkZ,
+                                        e
                                 );
-                            } else {
-                                // deprecated on paper - deprecation suppressed
-                                packet = new ClientboundLevelChunkWithLightPacket(
-                                        regionChunk,
-                                        nmsWorld.getChunkSource().getLightEngine(),
-                                        null,
-                                        null
-                                );
+                            } finally {
+                                NMSAdapter.endChunkPacketSend(nmsWorld.getWorld().getName(), pair, lockHolder);
                             }
-                            nearbyPlayers(nmsWorld, coordIntPair).forEach(p -> p.connection.send(packet));
-                        } catch (IllegalStateException e) {
-                            LOGGER.warn(
-                                    "Skipped sending chunk packet for chunk [{}, {}] due to concurrent section modification",
-                                    chunkX,
-                                    chunkZ,
-                                    e
-                            );
-                        } finally {
-                            NMSAdapter.endChunkPacketSend(nmsWorld.getWorld().getName(), pair, lockHolder);
                         }
-                    }
-            );
+                );
+            } catch (Throwable t) {
+                // The task will never run (e.g. plugin disabling): release the chunk packet lock now, otherwise the next
+                // section write to this chunk blocks forever.
+                NMSAdapter.endChunkPacketSend(nmsWorld.getWorld().getName(), pair, lockHolder);
+                throw t;
+            }
         } else {
             MinecraftServer.getServer().execute(() -> {
                 try {

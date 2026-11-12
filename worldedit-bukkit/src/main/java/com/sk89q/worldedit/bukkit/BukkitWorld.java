@@ -19,6 +19,7 @@
 
 package com.sk89q.worldedit.bukkit;
 
+import com.fastasyncworldedit.bukkit.util.FoliaScheduling;
 import com.fastasyncworldedit.bukkit.util.PaperSupport;
 import com.fastasyncworldedit.bukkit.util.WorldUnloadedException;
 import com.fastasyncworldedit.core.Fawe;
@@ -68,14 +69,12 @@ import org.bukkit.TreeType;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
-import org.bukkit.Location;
 import org.bukkit.block.Chest;
 import org.bukkit.entity.Entity;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 
 import java.lang.ref.WeakReference;
-import java.util.concurrent.CompletableFuture;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -150,17 +149,21 @@ public class BukkitWorld extends AbstractWorld {
 
     private <T> T syncRegion(BlockVector3 position, java.util.function.Supplier<T> supplier) {
         if (FoliaUtil.isFoliaServer()) {
-            World world = getWorld();
-            Location location = new Location(world, position.x(), position.y(), position.z());
-            CompletableFuture<T> future = new CompletableFuture<>();
-            Bukkit.getServer().getRegionScheduler().run(
-                    WorldEditPlugin.getInstance(),
-                    location,
-                    scheduledTask -> future.complete(supplier.get())
-            );
-            return future.join();
+            // Runs inline when this thread owns the region, never blocks forever (see FoliaScheduling)
+            return FoliaScheduling.callAt(getWorld(), position.x(), position.z(), supplier);
         }
         return TaskManager.taskManager().sync(supplier);
+    }
+
+    /**
+     * On Folia, run world access on the thread owning {@code position}. TaskManager#sync runs inline on Folia, so callers
+     * coming from edit or async threads would otherwise touch blocks of a region they don't own.
+     */
+    private <T> T onOwningRegion(BlockVector3 position, java.util.function.Supplier<T> supplier) {
+        if (FoliaUtil.isFoliaServer()) {
+            return FoliaScheduling.callAt(getWorld(), position.x(), position.z(), supplier);
+        }
+        return supplier.get();
     }
 
     @Override
@@ -297,6 +300,10 @@ public class BukkitWorld extends AbstractWorld {
         //FAWE start - safe edit region
         testCoords(pt);
         //FAWE end
+        return onOwningRegion(pt, () -> clearContainerBlockContents0(pt));
+    }
+
+    private boolean clearContainerBlockContents0(BlockVector3 pt) {
         BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
         if (adapter != null) {
             try {
@@ -406,7 +413,7 @@ public class BukkitWorld extends AbstractWorld {
     @Override
     public void dropItem(Vector3 pt, BaseItemStack item) {
         World world = getWorld();
-        world.dropItemNaturally(BukkitAdapter.adapt(world, pt), BukkitAdapter.adapt(item));
+        onOwningRegion(pt.toBlockPoint(), () -> world.dropItemNaturally(BukkitAdapter.adapt(world, pt), BukkitAdapter.adapt(item)));
     }
 
     @Override
@@ -549,14 +556,14 @@ public class BukkitWorld extends AbstractWorld {
         //FAWE start - safe edit region
         testCoords(pt);
         //FAWE end
-        getWorld().getBlockAt(pt.x(), pt.y(), pt.z()).breakNaturally();
+        onOwningRegion(pt, () -> getWorld().getBlockAt(pt.x(), pt.y(), pt.z()).breakNaturally());
     }
 
     //FAWE start
     @Override
     public Collection<BaseItemStack> getBlockDrops(BlockVector3 position) {
-        return getWorld().getBlockAt(position.x(), position.y(), position.z()).getDrops().stream()
-                .map(BukkitAdapter::adapt).collect(Collectors.toList());
+        return onOwningRegion(position, () -> getWorld().getBlockAt(position.x(), position.y(), position.z()).getDrops().stream()
+                .map(BukkitAdapter::adapt).collect(Collectors.toList()));
     }
     //FAWE end
 

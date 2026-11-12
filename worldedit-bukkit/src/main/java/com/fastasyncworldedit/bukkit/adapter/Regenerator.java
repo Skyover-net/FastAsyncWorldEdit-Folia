@@ -17,6 +17,7 @@ import com.sk89q.worldedit.regions.Region;
 import com.sk89q.worldedit.world.RegenOptions;
 import com.sk89q.worldedit.world.biome.BiomeType;
 import com.sk89q.worldedit.world.block.BaseBlock;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -109,13 +110,14 @@ public abstract class Regenerator {
     private void copyToWorld() {
         createSource();
         final long timeoutPerTick = TimeUnit.MILLISECONDS.toNanos(10);
-        int taskId;
+        int taskId = -1;
+        ScheduledTask foliaTask = null;
         if (FoliaUtil.isFoliaServer()) {
             World freshWorld = getFreshWorld();
             World world = freshWorld != null ? freshWorld : originalBukkitWorld;
             BlockVector3 min = region.getMinimumPoint();
             Location location = new Location(world, min.x(), min.y(), min.z());
-            var task = Bukkit.getServer().getRegionScheduler().runAtFixedRate(
+            foliaTask = Bukkit.getServer().getRegionScheduler().runAtFixedRate(
                     WorldEditPlugin.getInstance(),
                     location,
                     scheduledTask -> {
@@ -125,13 +127,26 @@ public abstract class Regenerator {
                     1,
                     1
             );
-            taskId = System.identityHashCode(task);
         } else {
             taskId = TaskManager.taskManager().repeat(() -> {
                 final long startTime = System.nanoTime();
                 runTasks(() -> System.nanoTime() - startTime < timeoutPerTick);
             }, 1);
         }
+        try {
+            setBlocks();
+        } finally {
+            // Always stop ticking the fresh world, also when setBlocks throws: otherwise the repeating task keeps the
+            // Regenerator and its temporary world alive forever.
+            if (foliaTask != null) {
+                foliaTask.cancel();
+            } else {
+                TaskManager.taskManager().cancel(taskId);
+            }
+        }
+    }
+
+    private void setBlocks() {
         //Setting Blocks
         boolean genbiomes = options.shouldRegenBiomes();
         boolean hasBiome = options.hasBiomeType();
@@ -150,7 +165,6 @@ public abstract class Regenerator {
             });
         }
         target.setBlocks(region, pattern);
-        TaskManager.taskManager().cancel(taskId);
     }
 
     /**

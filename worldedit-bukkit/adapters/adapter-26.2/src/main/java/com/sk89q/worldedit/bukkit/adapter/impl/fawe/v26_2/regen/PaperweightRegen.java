@@ -1,6 +1,7 @@
 package com.sk89q.worldedit.bukkit.adapter.impl.fawe.v26_2.regen;
 
 import com.fastasyncworldedit.bukkit.adapter.Regenerator;
+import com.fastasyncworldedit.bukkit.util.FoliaScheduling;
 import com.fastasyncworldedit.bukkit.util.PaperSupport;
 import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.queue.IChunkCache;
@@ -47,8 +48,6 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.OptionalLong;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
@@ -223,7 +222,7 @@ public class PaperweightRegen extends Regenerator {
         return true;
     }
 
-    private boolean initWorldForFolia() throws ExecutionException, InterruptedException {
+    private boolean initWorldForFolia() {
         MinecraftServer console = ((CraftServer) Bukkit.getServer()).getServer();
 
         ChunkPos spawnChunk = ChunkPos.containing(
@@ -232,23 +231,12 @@ public class PaperweightRegen extends Regenerator {
 
         setRandomSpawnSelection(spawnChunk);
 
-        CompletableFuture<Boolean> initFuture = new CompletableFuture<>();
-
-        Bukkit.getServer().getRegionScheduler().run(
-                WorldEditPlugin.getInstance(),
-                freshWorld.getWorld(),
-                spawnChunk.x(), spawnChunk.z(),
-                task -> {
-                    try {
-                        console.initWorld(freshWorld, null);
-                        initFuture.complete(true);
-                    } catch (Exception e) {
-                        initFuture.completeExceptionally(e);
-                    }
-                }
-        );
-
-        return initFuture.get();
+        // Runs inline when already on the spawn region, propagates init failures and gives up after a timeout
+        // instead of blocking the regen forever if the temporary world's region never ticks.
+        return FoliaScheduling.callAt(freshWorld.getWorld(), spawnChunk.x() << 4, spawnChunk.z() << 4, () -> {
+            console.initWorld(freshWorld, null);
+            return true;
+        });
     }
 
     private void setRandomSpawnSelection(ChunkPos spawnChunk) {

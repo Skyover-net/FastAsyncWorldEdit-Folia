@@ -19,9 +19,11 @@
 
 package com.sk89q.worldedit.bukkit;
 
+import com.fastasyncworldedit.bukkit.util.FoliaScheduling;
 import com.fastasyncworldedit.bukkit.util.PaperSupport;
 import com.fastasyncworldedit.core.configuration.Caption;
 import com.fastasyncworldedit.core.configuration.Settings;
+import com.fastasyncworldedit.core.util.FoliaUtil;
 import com.fastasyncworldedit.core.util.TaskManager;
 import com.sk89q.util.StringUtil;
 import com.sk89q.wepif.VaultResolver;
@@ -164,7 +166,7 @@ public class BukkitPlayer extends AbstractPlayerActor {
     public void giveItem(BaseItemStack itemStack) {
         final PlayerInventory inv = player.getInventory();
         ItemStack newItem = BukkitAdapter.adapt(itemStack);
-        TaskManager.taskManager().sync(() -> {
+        java.util.function.Supplier<Object> give = () -> {
             if (itemStack.getType().id().equalsIgnoreCase(WorldEdit.getInstance().getConfiguration().wandItem)) {
                 inv.remove(newItem);
             }
@@ -186,7 +188,13 @@ public class BukkitPlayer extends AbstractPlayerActor {
             }
             player.updateInventory();
             return null;
-        });
+        };
+        if (FoliaUtil.isFoliaServer()) {
+            // Inventory and world access must happen on the thread owning the player
+            FoliaScheduling.callOnEntity(player, give, null);
+            return;
+        }
+        TaskManager.taskManager().sync(give);
     }
     //FAWE end
 

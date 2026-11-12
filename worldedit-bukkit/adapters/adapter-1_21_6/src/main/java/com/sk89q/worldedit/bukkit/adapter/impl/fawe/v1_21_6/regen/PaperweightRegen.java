@@ -1,6 +1,7 @@
 package com.sk89q.worldedit.bukkit.adapter.impl.fawe.v1_21_6.regen;
 
 import com.fastasyncworldedit.bukkit.adapter.Regenerator;
+import com.fastasyncworldedit.bukkit.util.FoliaScheduling;
 import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.queue.IChunkCache;
 import com.fastasyncworldedit.core.queue.IChunkGet;
@@ -42,8 +43,6 @@ import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.OptionalLong;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
@@ -217,7 +216,7 @@ public class PaperweightRegen extends Regenerator {
         return true;
     }
 
-    private boolean initWorldForFolia(PrimaryLevelData worldData) throws ExecutionException, InterruptedException {
+    private boolean initWorldForFolia(PrimaryLevelData worldData) {
         MinecraftServer console = ((CraftServer) Bukkit.getServer()).getServer();
 
         ChunkPos spawnChunk = new ChunkPos(
@@ -226,23 +225,12 @@ public class PaperweightRegen extends Regenerator {
 
         setRandomSpawnSelection(spawnChunk);
 
-        CompletableFuture<Boolean> initFuture = new CompletableFuture<>();
-
-        Bukkit.getServer().getRegionScheduler().run(
-                WorldEditPlugin.getInstance(),
-                freshWorld.getWorld(),
-                spawnChunk.x, spawnChunk.z,
-                task -> {
-                    try {
-                        console.initWorld(freshWorld, worldData, worldData, worldData.worldGenOptions());
-                        initFuture.complete(true);
-                    } catch (Exception e) {
-                        initFuture.completeExceptionally(e);
-                    }
-                }
-        );
-
-        return initFuture.get();
+        // Runs inline when already on the spawn region, propagates init failures and gives up after a timeout
+        // instead of blocking the regen forever if the temporary world's region never ticks.
+        return FoliaScheduling.callAt(freshWorld.getWorld(), spawnChunk.x << 4, spawnChunk.z << 4, () -> {
+            console.initWorld(freshWorld, worldData, worldData, worldData.worldGenOptions());
+            return true;
+        });
     }
 
     private void setRandomSpawnSelection(ChunkPos spawnChunk) {

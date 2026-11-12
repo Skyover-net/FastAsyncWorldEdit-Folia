@@ -1,7 +1,9 @@
 package com.sk89q.worldedit.bukkit.adapter.impl.fawe.v26_2;
 
+import com.fastasyncworldedit.bukkit.util.FoliaScheduling;
 import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.math.IntPair;
+import com.fastasyncworldedit.core.util.FoliaUtil;
 import com.fastasyncworldedit.core.util.TaskManager;
 import com.fastasyncworldedit.core.util.task.RunnableVal;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
@@ -10,6 +12,11 @@ import com.sk89q.worldedit.internal.wna.WorldNativeAccess;
 import com.sk89q.worldedit.util.SideEffect;
 import com.sk89q.worldedit.util.SideEffectSet;
 import com.sk89q.worldedit.world.block.BlockState;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.MinecraftServer;
@@ -261,6 +268,10 @@ public class PaperweightFaweWorldNativeAccess implements WorldNativeAccess<Level
                 }
             }
         };
+        if (FoliaUtil.isFoliaServer()) {
+            applyOnOwningRegions(changes, toSend);
+            return;
+        }
         TaskManager.taskManager().async(() -> TaskManager.taskManager().sync(runnableVal));
     }
 
@@ -277,13 +288,40 @@ public class PaperweightFaweWorldNativeAccess implements WorldNativeAccess<Level
                 }
             }
         };
-        if (Fawe.isMainThread()) {
+        if (FoliaUtil.isFoliaServer()) {
+            applyOnOwningRegions(new ArrayList<>(cachedChanges), Set.copyOf(cachedChunksToSend));
+        } else if (Fawe.isMainThread()) {
             runnableVal.run();
         } else {
             TaskManager.taskManager().sync(runnableVal);
         }
         cachedChanges.clear();
         cachedChunksToSend.clear();
+    }
+
+    /**
+     * Folia: apply each change on the thread owning its chunk (TaskManager#sync runs inline on Folia, which would set
+     * blocks of regions this thread doesn't own).
+     */
+    private void applyOnOwningRegions(Collection<CachedChange> changes, Set<IntPair> toSend) {
+        Map<IntPair, List<CachedChange>> byChunk = new HashMap<>();
+        for (CachedChange cc : changes) {
+            byChunk.computeIfAbsent(new IntPair(cc.levelChunk.locX, cc.levelChunk.locZ), k -> new ArrayList<>()).add(cc);
+        }
+        org.bukkit.World world = getLevel().getWorld();
+        for (Map.Entry<IntPair, List<CachedChange>> entry : byChunk.entrySet()) {
+            final IntPair chunk = entry.getKey();
+            final List<CachedChange> chunkChanges = entry.getValue();
+            final boolean send = toSend.contains(chunk);
+            FoliaScheduling.runAtChunk(world, chunk.x(), chunk.z(), () -> {
+                chunkChanges.forEach(cc -> cc.levelChunk.setBlockState(cc.blockPos, cc.blockState,
+                        sideEffectSet.shouldApply(SideEffect.UPDATE) ? 0 : 512
+                ));
+                if (send) {
+                    PaperweightPlatformAdapter.sendChunk(chunk, getLevel().getWorld().getHandle(), chunk.x(), chunk.z());
+                }
+            });
+        }
     }
 
     private record CachedChange(

@@ -3,6 +3,7 @@ package com.sk89q.worldedit.bukkit.adapter.impl.fawe.v1_21_11;
 import com.fastasyncworldedit.bukkit.adapter.AbstractBukkitGetBlocks;
 import com.fastasyncworldedit.bukkit.adapter.DelegateSemaphore;
 import com.fastasyncworldedit.bukkit.adapter.NativeEntityFunctionSet;
+import com.fastasyncworldedit.bukkit.util.FoliaScheduling;
 import com.fastasyncworldedit.bukkit.util.PaperSupport;
 import com.fastasyncworldedit.core.FaweCache;
 import com.fastasyncworldedit.core.configuration.Settings;
@@ -711,13 +712,21 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
                                 );
                                 if (FoliaUtil.isFoliaServer()) {
                                     Location location = new Location(nmsWorld.getWorld(), x, y, z);
-                                    Bukkit.getServer().getRegionScheduler().execute(WorldEditPlugin.getInstance(), location, () -> {
+                                    if (Bukkit.isOwnedByCurrentRegion(location)) {
                                         if (!nmsWorld.addFreshEntity(entity, CreatureSpawnEvent.SpawnReason.CUSTOM)) {
                                             onError.run();
                                             // Unsuccessful create should not be saved to history
                                             iterator.remove();
                                         }
-                                    });
+                                    } else {
+                                        // The iterator is no longer valid when this runs on the owning region, so a failed
+                                        // spawn is only logged here (undoing a missing entity is a no-op).
+                                        Bukkit.getServer().getRegionScheduler().execute(WorldEditPlugin.getInstance(), location, () -> {
+                                            if (!nmsWorld.addFreshEntity(entity, CreatureSpawnEvent.SpawnReason.CUSTOM)) {
+                                                onError.run();
+                                            }
+                                        });
+                                    }
                                 } else {
                                     if (!set.getSideEffectSet().shouldApply(SideEffect.ENTITY_EVENTS)) {
                                         entity.spawnReason = CreatureSpawnEvent.SpawnReason.CUSTOM;
@@ -763,8 +772,8 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
                         final BlockPos pos = new BlockPos(x, y, z);
 
                         if (FoliaUtil.isFoliaServer()) {
-                            Location location = new Location(nmsWorld.getWorld(), x, y, z);
-                            Bukkit.getServer().getRegionScheduler().execute(WorldEditPlugin.getInstance(), location, () -> {
+                            // Inline when this thread owns the chunk, otherwise on the owning region
+                            FoliaScheduling.runAtChunk(nmsWorld.getWorld(), x >> 4, z >> 4, () -> {
                                 synchronized (nmsWorld) {
                                     BlockEntity tileEntity = nmsWorld.getBlockEntity(pos);
                                     if (tileEntity == null || tileEntity.isRemoved()) {
@@ -853,6 +862,11 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
             sectionLock.writeLock().unlock();
         }
         this.blocks[layer] = arr;
+    }
+
+    @Override
+    protected org.bukkit.World getBukkitWorld() {
+        return serverLevel.getWorld();
     }
 
     @Override

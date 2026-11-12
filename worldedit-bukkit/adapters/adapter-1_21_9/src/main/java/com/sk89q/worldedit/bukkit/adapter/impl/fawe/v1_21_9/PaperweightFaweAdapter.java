@@ -2,6 +2,7 @@ package com.sk89q.worldedit.bukkit.adapter.impl.fawe.v1_21_9;
 
 import com.fastasyncworldedit.bukkit.adapter.FaweAdapter;
 import com.fastasyncworldedit.bukkit.adapter.NMSRelighterFactory;
+import com.fastasyncworldedit.bukkit.util.FoliaScheduling;
 import com.fastasyncworldedit.bukkit.util.PaperSupport;
 import com.fastasyncworldedit.core.FaweCache;
 import com.fastasyncworldedit.core.entity.LazyBaseEntity;
@@ -24,7 +25,6 @@ import com.sk89q.worldedit.EditSession;
 import com.sk89q.worldedit.MaxChangedBlocksException;
 import com.sk89q.worldedit.blocks.BaseItemStack;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
-import com.sk89q.worldedit.bukkit.WorldEditPlugin;
 import com.sk89q.worldedit.bukkit.adapter.BukkitImplAdapter;
 import com.sk89q.worldedit.bukkit.adapter.ext.fawe.v1_21_9.PaperweightAdapter;
 import com.sk89q.worldedit.bukkit.adapter.impl.fawe.v1_21_9.regen.PaperweightRegen;
@@ -136,7 +136,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalInt;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -582,14 +581,8 @@ public final class PaperweightFaweAdapter extends FaweAdapter<net.minecraft.nbt.
 
     private <T> T syncRegion(World world, BlockVector3 pt, java.util.function.Supplier<T> supplier) {
         if (FoliaUtil.isFoliaServer()) {
-            Location location = new Location(world, pt.x(), pt.y(), pt.z());
-            CompletableFuture<T> future = new CompletableFuture<>();
-            Bukkit.getServer().getRegionScheduler().run(
-                    WorldEditPlugin.getInstance(),
-                    location,
-                    scheduledTask -> future.complete(supplier.get())
-            );
-            return future.join();
+            // Runs inline when this thread owns the region; never blocks forever (see FoliaScheduling)
+            return FoliaScheduling.callAt(world, pt.x(), pt.z(), supplier);
         }
         return TaskManager.taskManager().sync(supplier);
     }
