@@ -19,10 +19,10 @@
 
 package com.sk89q.worldedit.bukkit;
 
+import com.fastasyncworldedit.bukkit.util.PaperSupport;
 import com.fastasyncworldedit.core.configuration.Caption;
 import com.fastasyncworldedit.core.configuration.Settings;
 import com.fastasyncworldedit.core.util.TaskManager;
-import io.papermc.lib.PaperLib;
 import com.sk89q.util.StringUtil;
 import com.sk89q.wepif.VaultResolver;
 import com.sk89q.worldedit.WorldEdit;
@@ -242,7 +242,7 @@ public class BukkitPlayer extends AbstractPlayerActor {
         }
         org.bukkit.World finalWorld = world;
         //FAWE end
-        if (PaperLib.isPaper()) {
+        if (PaperSupport.isPaper()) {
             player.teleportAsync(new Location(
                     finalWorld,
                     pos.x(),
@@ -374,7 +374,7 @@ public class BukkitPlayer extends AbstractPlayerActor {
 
     @Override
     public boolean setLocation(com.sk89q.worldedit.util.Location location) {
-        if (PaperLib.isPaper()) {
+        if (PaperSupport.isPaper()) {
             player.teleportAsync(BukkitAdapter.adapt(location));
             return true;
         }
@@ -449,22 +449,38 @@ public class BukkitPlayer extends AbstractPlayerActor {
     }
 
     @Override
-    public <B extends BlockStateHolder<B>> void sendFakeBlock(BlockVector3 pos, B block) {
+    public <B extends BlockStateHolder<B>> void sendFakeBlock(BlockVector3 pos, @Nullable B block) {
         Location loc = new Location(player.getWorld(), pos.x(), pos.y(), pos.z());
-        if (block == null) {
-            player.sendBlockChange(loc, player.getWorld().getBlockAt(loc).getBlockData());
+
+        BaseBlock baseBlock;
+        if (block != null) {
+            baseBlock = block.toBaseBlock();
         } else {
-            player.sendBlockChange(loc, BukkitAdapter.adapt(block));
-            BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
-            if (adapter != null) {
-                if (block.getBlockType() == BlockTypes.STRUCTURE_BLOCK && block instanceof BaseBlock) {
-                    LinCompoundTag nbt = ((BaseBlock) block).getNbt();
-                    if (nbt != null) {
-                        adapter.sendFakeNBT(player, pos, nbt);
-                        adapter.sendFakeOP(player);
-                    }
-                }
-            }
+            baseBlock = getExtent().getFullBlock(pos);
+        }
+
+        player.sendBlockChange(loc, BukkitAdapter.adapt(baseBlock));
+
+        BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
+        if (adapter == null) {
+            return;
+        }
+        LinCompoundTag nbtData = baseBlock.getNbt();
+        if (nbtData == null) {
+            return;
+        }
+        adapter.sendFakeNBT(player, pos, baseBlock, nbtData);
+        if (block != null && block.getBlockType() == BlockTypes.STRUCTURE_BLOCK) {
+            adapter.sendFakeOP(player);
+        }
+    }
+
+    @Override
+    @Deprecated(since = "2.16.3")
+    public void sendFakeOP() {
+        BukkitImplAdapter adapter = WorldEditPlugin.getInstance().getBukkitImplAdapter();
+        if (adapter != null) {
+            adapter.sendFakeOP(player);
         }
     }
 

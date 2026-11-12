@@ -2,6 +2,7 @@ package com.sk89q.worldedit.bukkit.adapter.impl.fawe.v1_21_4;
 
 import com.fastasyncworldedit.bukkit.adapter.FaweAdapter;
 import com.fastasyncworldedit.bukkit.adapter.NMSRelighterFactory;
+import com.fastasyncworldedit.bukkit.util.PaperSupport;
 import com.fastasyncworldedit.core.FaweCache;
 import com.fastasyncworldedit.core.entity.LazyBaseEntity;
 import com.fastasyncworldedit.core.extent.processor.PlacementStateProcessor;
@@ -19,6 +20,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Sets;
 import com.mojang.serialization.Codec;
 import com.sk89q.worldedit.EditSession;
+import com.sk89q.worldedit.MaxChangedBlocksException;
 import com.sk89q.worldedit.blocks.BaseItemStack;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
 import com.sk89q.worldedit.bukkit.WorldEditPlugin;
@@ -52,9 +54,9 @@ import com.sk89q.worldedit.world.block.BlockTypesCache;
 import com.sk89q.worldedit.world.entity.EntityType;
 import com.sk89q.worldedit.world.generation.ConfiguredFeatureType;
 import com.sk89q.worldedit.world.generation.StructureType;
+import com.sk89q.worldedit.world.generation.TreeType;
 import com.sk89q.worldedit.world.item.ItemType;
 import com.sk89q.worldedit.world.registry.BlockMaterial;
-import io.papermc.lib.PaperLib;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Registry;
 import net.minecraft.core.RegistryAccess;
@@ -93,6 +95,7 @@ import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.feature.ConfiguredFeature;
+import net.minecraft.world.level.levelgen.placement.PlacedFeature;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
@@ -688,6 +691,44 @@ public final class PaperweightFaweAdapter extends FaweAdapter<Tag, ServerLevel> 
         return placeFeatureIntoSession(editSession, populator, placed);
     }
 
+    @Override
+    public boolean generateTree(
+            final TreeType treeType,
+            final World world,
+            final EditSession session,
+            final BlockVector3 pt
+    ) throws MaxChangedBlocksException {
+        ServerLevel serverLevel = getServerLevel(world);
+        ChunkGenerator generator = serverLevel.getMinecraftWorld().getChunkSource().getGenerator();
+
+        PlacedFeature placedFeature = serverLevel
+                .registryAccess()
+                .lookupOrThrow(Registries.PLACED_FEATURE)
+                .getValue(ResourceLocation.tryParse(treeType.id()));
+
+        FaweBlockStateListPopulator populator = new FaweBlockStateListPopulator(serverLevel);
+        List<CraftBlockState> placed = TaskManager.taskManager().sync(() -> {
+            preCaptureStates(serverLevel);
+            try {
+                if (!placedFeature.place(
+                        populator,
+                        generator,
+                        serverLevel.random,
+                        new BlockPos(pt.x(), pt.y(), pt.z())
+                )) {
+                    return null;
+                }
+                List<CraftBlockState> placedBlocks = new ArrayList<>(populator.getList());
+                placedBlocks.addAll(serverLevel.capturedBlockStates.values());
+                return placedBlocks;
+            } finally {
+                postCaptureBlockStates(serverLevel);
+            }
+        });
+
+        return placeFeatureIntoSession(session, populator, placed);
+    }
+
     private boolean placeFeatureIntoSession(
             final EditSession editSession,
             final FaweBlockStateListPopulator populator,
@@ -836,7 +877,7 @@ public final class PaperweightFaweAdapter extends FaweAdapter<Tag, ServerLevel> 
 
     @Override
     public RelighterFactory getRelighterFactory() {
-        if (PaperLib.isPaper()) {
+        if (PaperSupport.isPaper()) {
             return new PaperweightStarlightRelighterFactory();
         } else {
             return new NMSRelighterFactory();
@@ -868,7 +909,7 @@ public final class PaperweightFaweAdapter extends FaweAdapter<Tag, ServerLevel> 
     }
 
     private boolean wasAccessibleSinceLastSave(ChunkHolder holder) {
-        if (PaperLib.isPaper()) { // Papers new chunk system has no related replacement - therefor we assume true.
+        if (PaperSupport.isPaper()) { // Papers new chunk system has no related replacement - therefor we assume true.
             return true;
         }
         try {
