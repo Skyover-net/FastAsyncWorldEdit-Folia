@@ -63,6 +63,7 @@ import io.papermc.lib.PaperLib;
 import org.apache.logging.log4j.Logger;
 import org.bukkit.Bukkit;
 import org.bukkit.Effect;
+import org.bukkit.Material;
 import org.bukkit.TreeType;
 import org.bukkit.World;
 import org.bukkit.block.Block;
@@ -462,7 +463,18 @@ public class BukkitWorld extends AbstractWorld {
     @Override
     public boolean playBlockBreakEffect(Vector3 position, BlockType type) {
         World world = getWorld();
-        world.playEffect(BukkitAdapter.adapt(world, position), Effect.STEP_SOUND, BukkitAdapter.adapt(type));
+        Location location = BukkitAdapter.adapt(world, position);
+        Material material = BukkitAdapter.adapt(type);
+        if (FoliaUtil.isFoliaServer() && !Bukkit.isOwnedByCurrentRegion(location)) {
+            // Effects are played from the global region scheduler on Folia; hand off to the owning region.
+            Bukkit.getRegionScheduler().execute(
+                    WorldEditPlugin.getInstance(),
+                    location,
+                    () -> world.playEffect(location, Effect.STEP_SOUND, material)
+            );
+            return true;
+        }
+        world.playEffect(location, Effect.STEP_SOUND, material);
         return true;
     }
     //FAWE end

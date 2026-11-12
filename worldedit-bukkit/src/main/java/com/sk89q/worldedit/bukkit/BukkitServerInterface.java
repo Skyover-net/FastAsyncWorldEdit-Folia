@@ -137,6 +137,15 @@ public class BukkitServerInterface extends AbstractPlatform implements MultiUser
     @Override
     public int schedule(long delay, long period, Runnable task) {
         if (FoliaUtil.isFoliaServer()) {
+            // Folia has no task ids; return a non-failure id so callers (e.g. the block break effect queue)
+            // do not keep rescheduling or treat the task as failed.
+            // The global region scheduler requires an initial delay of at least 1 tick.
+            plugin.getServer().getGlobalRegionScheduler().runAtFixedRate(
+                    plugin,
+                    scheduledTask -> task.run(),
+                    Math.max(1, delay),
+                    period
+            );
             return 0;
         }
         return Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, task, delay, period);
