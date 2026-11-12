@@ -174,15 +174,19 @@ public class BukkitBlockCommandSender extends AbstractCommandBlockActor {
             private volatile boolean active = true;
 
             private void updateActive() {
-                Block block = sender.getBlock();
-                if (!block.getWorld().isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)) {
-                    active = false;
-                    return;
+                try {
+                    Block block = sender.getBlock();
+                    if (!block.getWorld().isChunkLoaded(block.getX() >> 4, block.getZ() >> 4)) {
+                        active = false;
+                        return;
+                    }
+                    Material type = block.getType();
+                    active = type == Material.COMMAND_BLOCK
+                            || type == Material.CHAIN_COMMAND_BLOCK
+                            || type == Material.REPEATING_COMMAND_BLOCK;
+                } catch (Throwable t) {
+                    WorldEdit.logger.warn("Exception while updating command block sender active state", t);
                 }
-                Material type = block.getType();
-                active = type == Material.COMMAND_BLOCK
-                        || type == Material.CHAIN_COMMAND_BLOCK
-                        || type == Material.REPEATING_COMMAND_BLOCK;
             }
 
             @Override
@@ -192,13 +196,20 @@ public class BukkitBlockCommandSender extends AbstractCommandBlockActor {
 
             @Override
             public boolean isActive() {
+                if (FoliaUtil.isFoliaServer()) {
+                    // On Folia the block may only be read by the region thread that owns it.
+                    Block block = sender.getBlock();
+                    if (Bukkit.isOwnedByCurrentRegion(block)) {
+                        updateActive();
+                    } else {
+                        Bukkit.getRegionScheduler().execute(plugin, block.getLocation(), this::updateActive);
+                    }
+                    return active;
+                }
                 if (Bukkit.isPrimaryThread()) {
                     // we can update eagerly
                     updateActive();
                 } else {
-                    if (FoliaUtil.isFoliaServer()) {
-                        return active;
-                    }
                     // we should update it eventually
                     Bukkit.getScheduler().callSyncMethod(
                             plugin,
