@@ -6,6 +6,7 @@ import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.queue.IChunkCache;
 import com.fastasyncworldedit.core.queue.IChunkGet;
 import com.fastasyncworldedit.core.queue.implementation.chunk.ChunkCache;
+import com.fastasyncworldedit.core.util.FoliaUtil;
 import com.google.common.collect.ImmutableList;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
 import com.sk89q.worldedit.bukkit.WorldEditPlugin;
@@ -23,6 +24,7 @@ import net.minecraft.server.dedicated.DedicatedServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.ProgressListener;
 import net.minecraft.util.Util;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.dimension.LevelStem;
@@ -45,6 +47,8 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.OptionalLong;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
@@ -211,7 +215,50 @@ public class PaperweightRegen extends Regenerator {
         if (paperConfigField != null) {
             paperConfigField.set(freshWorld, originalServerWorld.paperConfig());
         }
+
+        if (FoliaUtil.isFoliaServer()) {
+            return initWorldForFolia();
+        }
+
         return true;
+    }
+
+    private boolean initWorldForFolia() throws ExecutionException, InterruptedException {
+        MinecraftServer console = ((CraftServer) Bukkit.getServer()).getServer();
+
+        ChunkPos spawnChunk = freshWorld.getChunkSource().getGenerator().getOrigin(
+                freshWorld.getChunkSource().randomState()
+        );
+
+        setRandomSpawnSelection(spawnChunk);
+
+        CompletableFuture<Boolean> initFuture = new CompletableFuture<>();
+
+        Bukkit.getServer().getRegionScheduler().run(
+                WorldEditPlugin.getInstance(),
+                freshWorld.getWorld(),
+                spawnChunk.x(), spawnChunk.z(),
+                task -> {
+                    try {
+                        console.initWorld(freshWorld, null);
+                        initFuture.complete(true);
+                    } catch (Exception e) {
+                        initFuture.completeExceptionally(e);
+                    }
+                }
+        );
+
+        return initFuture.get();
+    }
+
+    private void setRandomSpawnSelection(ChunkPos spawnChunk) {
+        try {
+            Field randomSpawnField = ServerLevel.class.getDeclaredField("randomSpawnSelection");
+            randomSpawnField.setAccessible(true);
+            randomSpawnField.set(freshWorld, spawnChunk);
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException("Failed to set randomSpawnSelection for Folia world initialization", e);
+        }
     }
 
     @Override
@@ -245,6 +292,11 @@ public class PaperweightRegen extends Regenerator {
             SafeFiles.tryHardToDeleteDir(tempDir);
         } catch (Exception ignored) {
         }
+    }
+
+    @Override
+    protected World getFreshWorld() {
+        return freshWorld != null ? freshWorld.getWorld() : null;
     }
 
     @Override

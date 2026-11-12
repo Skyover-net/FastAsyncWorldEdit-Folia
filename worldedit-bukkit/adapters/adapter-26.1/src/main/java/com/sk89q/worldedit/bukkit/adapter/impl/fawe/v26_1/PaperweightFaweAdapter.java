@@ -11,6 +11,7 @@ import com.fastasyncworldedit.core.nbt.FaweCompoundTag;
 import com.fastasyncworldedit.core.queue.IBatchProcessor;
 import com.fastasyncworldedit.core.queue.IChunkGet;
 import com.fastasyncworldedit.core.queue.implementation.packet.ChunkPacket;
+import com.fastasyncworldedit.core.util.FoliaUtil;
 import com.fastasyncworldedit.core.util.TaskManager;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
@@ -22,6 +23,7 @@ import com.sk89q.worldedit.EditSession;
 import com.sk89q.worldedit.MaxChangedBlocksException;
 import com.sk89q.worldedit.blocks.BaseItemStack;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
+import com.sk89q.worldedit.bukkit.WorldEditPlugin;
 import com.sk89q.worldedit.bukkit.adapter.BukkitImplAdapter;
 import com.sk89q.worldedit.bukkit.adapter.impl.v26_1.PaperweightAdapter;
 import com.sk89q.worldedit.bukkit.adapter.impl.fawe.v26_1.regen.PaperweightRegen;
@@ -131,6 +133,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalInt;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -561,6 +564,21 @@ public final class PaperweightFaweAdapter extends FaweAdapter<net.minecraft.nbt.
         serverLevel.captureTreeGeneration = false;
         serverLevel.capturedBlockStates.clear();
     }
+
+    private <T> T syncRegion(World world, BlockVector3 pt, java.util.function.Supplier<T> supplier) {
+        if (FoliaUtil.isFoliaServer()) {
+            Location location = new Location(world, pt.x(), pt.y(), pt.z());
+            CompletableFuture<T> future = new CompletableFuture<>();
+            Bukkit.getServer().getRegionScheduler().run(
+                    WorldEditPlugin.getInstance(),
+                    location,
+                    scheduledTask -> future.complete(supplier.get())
+            );
+            return future.join();
+        }
+        return TaskManager.taskManager().sync(supplier);
+    }
+
     @Override
     public boolean generateFeature(ConfiguredFeatureType feature, World world, EditSession editSession, BlockVector3 pt) {
         ServerLevel serverLevel = getServerLevel(world);
@@ -572,7 +590,7 @@ public final class PaperweightFaweAdapter extends FaweAdapter<net.minecraft.nbt.
                 .getValue(Identifier.tryParse(feature.id()));
 
         com.sk89q.worldedit.bukkit.adapter.impl.fawe.v26_1.FaweBlockStateListPopulator populator = new FaweBlockStateListPopulator(serverLevel);
-        List<CraftBlockState> placed = TaskManager.taskManager().sync(() -> {
+        List<CraftBlockState> placed = syncRegion(world, pt, () -> {
             preCaptureStates(serverLevel);
             try {
                 if (!configuredFeature.place(
@@ -609,7 +627,7 @@ public final class PaperweightFaweAdapter extends FaweAdapter<net.minecraft.nbt.
         TransformerLevelAccessor access = new TransformerLevelAccessor();
         FaweBlockStateListPopulator populator = new FaweBlockStateListPopulator(serverLevel);
         access.setDelegate(populator);
-        List<CraftBlockState> placed = TaskManager.taskManager().sync(() -> {
+        List<CraftBlockState> placed = syncRegion(world, pt, () -> {
             preCaptureStates(serverLevel);
             try {
                 StructureStart structureStart = structure.generate(
