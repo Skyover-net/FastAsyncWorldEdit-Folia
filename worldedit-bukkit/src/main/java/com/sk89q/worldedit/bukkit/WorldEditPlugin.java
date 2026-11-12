@@ -453,7 +453,11 @@ public class WorldEditPlugin extends JavaPlugin {
         if (config != null) {
             config.unload();
         }
-        if (!FoliaUtil.isFoliaServer()) {
+        if (FoliaUtil.isFoliaServer()) {
+            this.getServer().getGlobalRegionScheduler().cancelTasks(this);
+            this.getServer().getAsyncScheduler().cancelTasks(this);
+            // Region schedulers do not support cancelling tasks
+        } else {
             this.getServer().getScheduler().cancelTasks(this);
         }
     }
